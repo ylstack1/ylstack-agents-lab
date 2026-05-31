@@ -1,0 +1,119 @@
+@import "tailwindcss";
+@import "./styles/themes.generated.css";
+@import "./components/CommandPalette.css";
+@plugin "@tailwindcss/typography";
+
+@plugin "daisyui" {
+  /* @property isn't supported by some browsers and gives a noisy warning https://github.com/saadeghi/daisyui/issues/3882 */
+  exclude: properties;
+}
+
+/* Built-in Downy theme — hand-tuned. Follows the `${id}-${mode}` naming
+   convention used by the generated themes below so the theme picker can treat
+   them uniformly. */
+@plugin "daisyui/theme" {
+  name: "downy-light";
+  default: true;
+  color-scheme: light;
+  --color-base-100: oklch(100% 0 0);
+  --color-base-200: oklch(97% 0 0);
+  --color-base-300: oklch(92% 0 0);
+  --color-base-content: oklch(20% 0 0);
+  /* Warm amber — drives buttons, links, pills, and the assistant stripe. */
+  --color-primary: oklch(70% 0.14 65);
+  --color-primary-content: oklch(20% 0.04 65);
+  --color-secondary: oklch(55% 0.15 145);
+  --color-secondary-content: oklch(100% 0 0);
+  /* Dusty teal — paired with primary as the user stripe accent. */
+  --color-accent: oklch(58% 0.08 200);
+  --color-accent-content: oklch(100% 0 0);
+  --color-neutral: oklch(25% 0 0);
+  --color-neutral-content: oklch(100% 0 0);
+  --color-info: oklch(70% 0.15 230);
+  --color-info-content: oklch(100% 0 0);
+  --color-success: oklch(65% 0.18 145);
+  --color-success-content: oklch(100% 0 0);
+  --color-warning: oklch(80% 0.15 80);
+  --color-warning-content: oklch(100% 0 0);
+  --color-error: oklch(65% 0.2 25);
+  --color-error-content: oklch(100% 0 0);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "downy-dark";
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: oklch(18% 0 0);
+  --color-base-200: oklch(14% 0 0);
+  --color-base-300: oklch(22% 0 0);
+  --color-base-content: oklch(92% 0 0);
+  /* Warm amber — drives buttons, links, pills, and the assistant stripe. */
+  --color-primary: oklch(74% 0.14 65);
+  --color-primary-content: oklch(18% 0.04 65);
+  --color-secondary: oklch(60% 0.15 145);
+  --color-secondary-content: oklch(100% 0 0);
+  /* Dusty teal — paired with primary as the user stripe accent. */
+  --color-accent: oklch(66% 0.08 200);
+  --color-accent-content: oklch(18% 0 0);
+  --color-neutral: oklch(85% 0 0);
+  --color-neutral-content: oklch(20% 0 0);
+  --color-info: oklch(70% 0.15 230);
+  --color-info-content: oklch(100% 0 0);
+  --color-success: oklch(65% 0.18 145);
+  --color-success-content: oklch(100% 0 0);
+  --color-warning: oklch(80% 0.15 80);
+  --color-warning-content: oklch(100% 0 0);
+  --color-error: oklch(65% 0.2 25);
+  --color-error-content: oklch(100% 0 0);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+html,
+body {
+  @apply m-0 bg-base-200;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Prevent Safari mobile from zooming on input focus (requires 16px minimum) */
+input,
+textarea,
+select {
+  @apply text-base;
+}
+
+/* Global input focus styling - use primary color instead of default ring */
+.input:focus,
+.input:focus-visible,
+.textarea:focus,
+.textarea:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  background-color: color-mix(in oklab, var(--color-primary) 10%, transparent);
+}
+
+/* Shimmer used by InputBox to signal "agent working" without a separate
+   floating spinner. A 1px-tall gradient sweeps the top edge of the input. */
+@keyframes downy-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}

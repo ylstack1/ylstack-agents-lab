@@ -1,0 +1,52 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ylstack-agents-lab",
+  "main": "dist/server/server.js",
+  "compatibility_date": "2025-09-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "downy",
+      "database_id": "41342f26-e03b-4a52-aa4e-c54036e64cfc",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "WORKSPACE_BUCKET",
+      "bucket_name": "downy-workspace","preview_bucket_name": "downy-workspace",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DownyAgent",
+        "class_name": "DownyAgent",
+      },
+      {
+        "name": "ChildAgent",
+        "class_name": "ChildAgent",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["DownyAgent", "ChildAgent"],
+    },
+  ],
+  "ai": {
+    "binding": "AI",
+  },
+  "vars": {
+    "MODEL_ID": "@cf/moonshotai/kimi-k2.6",
+    "TEAM_DOMAIN": "Hy",
+    "POLICY_AUD": "Hh",
+    "EXA_API_KEY": "Hh",
+  },
+  "observability": {
+    "enabled": true,
+  },
+  "upload_source_maps": true,
+}

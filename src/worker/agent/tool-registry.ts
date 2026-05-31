@@ -1,0 +1,291 @@
+import {
+  createDeleteTool,
+  createEditTool,
+  createReadTool,
+} from "@cloudflare/think/tools/workspace";
+import type { Workspace } from "@cloudflare/shell";
+import { dynamicTool, jsonSchema, tool } from "ai";
+import type { ToolSet } from "ai";
+import { z } from "zod";
+
+import type { McpToolDescriptor } from "./mcp-proxy";
+import { createReadPeerAgentTool } from "./tools/read-peer-agent";
+import {
+  createCreateSkillTool,
+  createDeleteSkillTool,
+  createListSkillFilesTool,
+  createListSkillsTool,
+  createReadSkillTool,
+  createUpdateSkillTool,
+} from "./tools/skills";
+import type { ActivePlan } from "./tools/todo-write";
+import { createTodoWriteTool } from "./tools/todo-write";
+import { createWebScrapeTool } from "./tools/web-scrape";
+import { createWebSearchTool } from "./tools/web-search";
+import { isProfileCorePath } from "./core-files";
+
+function assertNotProfileCorePath(path: string): void {
+  if (!isProfileCorePath(path.replace(/^\/+/, ""))) return;
+  throw new Error(
+    "identity/USER.md is stored in D1. Use read_user_profile/write_user_profile instead of workspace file tools.",
+  );
+}
+
+function createProtectedReadTool({
+  getWorkspace,
+}: {
+  getWorkspace: () => Workspace;
+}) {
+  return createReadTool({
+    ops: {
+      readFile: async (path) => {
+        assertNotProfileCorePath(path);
+        return getWorkspace().readFile(path);
+      },
+      stat: (path) => {
+        assertNotProfileCorePath(path);
+        return getWorkspace().stat(path);
+      },
+    },
+  });
+}
+
+function createProtectedEditTool({
+  getWorkspace,
+}: {
+  getWorkspace: () => Workspace;
+}) {
+  return createEditTool({
+    ops: {
+      readFile: async (path) => {
+        assertNotProfileCorePath(path);
+        return getWorkspace().readFile(path);
+      },
+      writeFile: async (path, content) => {
+        assertNotProfileCorePath(path);
+        await getWorkspace().writeFile(path, content);
+      },
+    },
+  });
+}
+
+function createProtectedDeleteTool({
+  getWorkspace,
+}: {
+  getWorkspace: () => Workspace;
+}) {
+  return createDeleteTool({
+    ops: {
+      rm: async (path, opts) => {
+        assertNotProfileCorePath(path);
+        await getWorkspace().rm(path, opts);
+      },
+    },
+  });
+}
+
+// Override Think's auto-registered `write`. Its parent-derivation
+// (`path.replace(/\/[^/]+$/, "")`) returns the unchanged path for top-level
+// files with no slash, then mkdirs it as a directory before writeFile —
+// leaving a `type='directory'` row that subsequent writes can't repair.
+// `Workspace.writeFile` already ensures parent dirs, so we just call it.
+// TODO(@cloudflare/think>0.2.4): drop once upstream is fixed.
+function createFixedWriteTool({
+  getWorkspace,
+}: {
+  getWorkspace: () => Workspace;
+}) {
+  return tool({
+    description:
+      "Write content to a file. Creates the file if it does not exist, overwrites if it does. Parent directories are created automatically.",
+    inputSchema: z.object({
+      path: z.string().describe("Path to the file (workspace-relative)"),
+      content: z.string().describe("Content to write to the file"),
+    }),
+    execute: async ({ path, content }) => {
+      assertNotProfileCorePath(path);
+      await getWorkspace().writeFile(path, content);
+      return {
+        path,
+        bytesWritten: new TextEncoder().encode(content).byteLength,
+        lines: content.split("\n").length,
+      };
+    },
+  });
+}
+
+function createMoveTool({ getWorkspace }: { getWorkspace: () => Workspace }) {
+  return tool({
+    description:
+      "Move or rename a file or directory inside the workspace. Prefer this over `read` + `write` + `delete` when relocating existing content — preserves bytes exactly, atomic, and works on binary files. Parent directories at the destination are created automatically. Set `recursive: true` when the source is a directory; otherwise the call fails with EISDIR.",
+    inputSchema: z.object({
+      from: z.string().describe("Source path (workspace-relative)"),
+      to: z.string().describe("Destination path (workspace-relative)"),
+      recursive: z
+        .boolean()
+        .optional()
+        .describe(
+          "Required when `from` is a directory. Defaults to false; on a directory source the call fails with EISDIR.",
+        ),
+    }),
+    execute: async ({ from, to, recursive }) => {
+      assertNotProfileCorePath(from);
+      assertNotProfileCorePath(to);
+      await getWorkspace().mv(from, to, { recursive: recursive ?? false });
+      return { from, to };
+    },
+  });
+}
+
+function createCopyTool({ getWorkspace }: { getWorkspace: () => Workspace }) {
+  return tool({
+    description:
+      "Copy a file or directory inside the workspace. Prefer this over `read` + `write` when duplicating existing content — preserves bytes exactly and works on binary files. Parent directories at the destination are created automatically. Set `recursive: true` when the source is a directory; otherwise the call fails with EISDIR.",
+    inputSchema: z.object({
+      from: z.string().describe("Source path (workspace-relative)"),
+      to: z.string().describe("Destination path (workspace-relative)"),
+      recursive: z
+        .boolean()
+        .optional()
+        .describe(
+          "Required when `from` is a directory. Defaults to false; on a directory source the call fails with EISDIR.",
+        ),
+    }),
+    execute: async ({ from, to, recursive }) => {
+      assertNotProfileCorePath(from);
+      assertNotProfileCorePath(to);
+      await getWorkspace().cp(from, to, { recursive: recursive ?? false });
+      return { from, to };
+    },
+  });
+}
+
+/**
+ * Single source of truth for the tool surface shared between
+ * `DownyAgent` (the user-facing chat agent) and `ChildAgent` (the
+ * background-task worker). Both agents call `buildSharedToolSet` so a new
+ * tool is added in exactly one place. The child binds `getWorkspace` to
+ * its remote-workspace proxy so workspace ops transparently hit the
+ * parent's DO. Parent-only capabilities (`spawn_background_task`,
+ * `connect_mcp_server`, `list_mcp_servers`, `disconnect_mcp_server`) stay
+ * inline in `DownyAgent#getTools` because they close over parent-only
+ * state — DO RPC dispatch and the live `MCPClientManager`.
+ *
+ * Think auto-registers workspace file tools off `this.workspace`. The tools
+ * returned here override `read`/`write`/`edit`/`delete` so `identity/USER.md`
+ * cannot drift into R2; `list`/`find`/`grep` still come from Think. `move`
+ * and `copy` aren't auto-registered, so they're added here as wrappers around
+ * `Workspace.mv` / `Workspace.cp`.
+ *
+ * Web fan-out (`web_search`, `web_scrape`) accepts arrays directly — pass
+ * multiple queries / URLs in a single call rather than spreading across turns.
+ */
+
+type SharedToolDeps = {
+  env: Cloudflare.Env;
+  /** Lazy so each tool call sees the current `this.workspace` reference. */
+  getWorkspace: () => Workspace;
+  /**
+   * Slug to treat as "self" for `read_peer_agent`'s self-loop guard. For
+   * the parent agent this is `this.name`; for the child it's the parent's
+   * slug (the child reads peers on the parent's behalf, so it shouldn't be
+   * able to read the parent itself either).
+   */
+  parentSlug: string;
+  bumpPeerReadCount: () => number;
+  /**
+   * Persist the latest `todo_write` plan to the agent's DO storage (or
+   * clear it when the plan is fully done). Read back in `beforeTurn` and
+   * rendered into the system prompt — see `renderActivePlanSection` in
+   * `build-system-prompt.ts`.
+   */
+  setActivePlan: (plan: ActivePlan | null) => Promise<void>;
+};
+
+/** Tools both agents register. */
+export function buildSharedToolSet(deps: SharedToolDeps): ToolSet {
+  const { env, getWorkspace, parentSlug, bumpPeerReadCount, setActivePlan } =
+    deps;
+  return {
+    web_search: createWebSearchTool(env.EXA_API_KEY),
+    web_scrape: createWebScrapeTool(env.EXA_API_KEY),
+    read_peer_agent: createReadPeerAgentTool({
+      env,
+      parentSlug,
+      bumpCount: bumpPeerReadCount,
+    }),
+    list_skills: createListSkillsTool({ getWorkspace }),
+    read_skill: createReadSkillTool({ getWorkspace }),
+    list_skill_files: createListSkillFilesTool({ getWorkspace }),
+    read: createProtectedReadTool({ getWorkspace }),
+    write: createFixedWriteTool({ getWorkspace }),
+    edit: createProtectedEditTool({ getWorkspace }),
+    delete: createProtectedDeleteTool({ getWorkspace }),
+    move: createMoveTool({ getWorkspace }),
+    copy: createCopyTool({ getWorkspace }),
+    create_skill: createCreateSkillTool({ getWorkspace }),
+    update_skill: createUpdateSkillTool({ getWorkspace }),
+    delete_skill: createDeleteSkillTool({ getWorkspace }),
+    todo_write: createTodoWriteTool({ setActivePlan }),
+  };
+}
+
+function mcpToolSegment(value: string): string {
+  const segment = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48);
+  return segment.length > 0 ? segment : "mcp";
+}
+
+function uniqueToolKey(tools: ToolSet, baseKey: string): string {
+  if (!(baseKey in tools)) return baseKey;
+  let suffix = 2;
+  let key = `${baseKey}_${suffix}`;
+  while (key in tools) {
+    suffix += 1;
+    key = `${baseKey}_${suffix}`;
+  }
+  return key;
+}
+
+export function activeToolsWithMcpWrappers(
+  baseTools: ToolSet,
+  mcpTools: ToolSet,
+): string[] {
+  return Array.from(
+    new Set([
+      ...Object.keys(baseTools).filter((name) => !name.startsWith("tool_")),
+      ...Object.keys(mcpTools),
+    ]),
+  );
+}
+
+/**
+ * Wrap each MCP tool in a `dynamicTool`. Parent turns use these wrappers
+ * directly, and child turns proxy through the parent over RPC. We build
+ * names from the human server name and original tool name instead of the
+ * SDK's raw `tool_<serverId>_<toolName>` key so hibernation, reconnects, and
+ * random connection IDs don't change the callable namespace. Sanitising also
+ * avoids losing tools whose MCP names contain characters the model provider
+ * rejects in tool names.
+ */
+export function buildMcpProxyTools(args: {
+  descriptors: McpToolDescriptor[];
+  callTool: (serverId: string, name: string, args: unknown) => Promise<unknown>;
+}): ToolSet {
+  const tools: ToolSet = {};
+  for (const entry of args.descriptors) {
+    const baseKey = `tool_${mcpToolSegment(entry.serverName)}_${mcpToolSegment(entry.name)}`;
+    const key = uniqueToolKey(tools, baseKey);
+    tools[key] = dynamicTool({
+      description: `[${entry.serverName}] ${entry.description ?? entry.name}`,
+      inputSchema: jsonSchema(entry.inputSchema),
+      execute: async (input) =>
+        args.callTool(entry.serverId, entry.name, input),
+    });
+  }
+  return tools;
+}
